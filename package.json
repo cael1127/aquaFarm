@@ -1,5 +1,5 @@
 {
-  "name": "aquafarm-manager-expo",
+  "name": "oyster-farm-manager-expo",
   "version": "1.0.0",
   "main": "index.ts",
   "scripts": {
@@ -9,10 +9,27 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@expo/vector-icons": "^14.1.0",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "@react-native-community/netinfo": "^11.4.1",
+    "@react-navigation/bottom-tabs": "^7.4.2",
+    "@react-navigation/native": "^7.1.14",
+    "@react-navigation/stack": "^7.4.2",
+    "@supabase/supabase-js": "^2.52.0",
     "expo": "~53.0.20",
+    "expo-font": "^13.3.2",
+    "expo-image-picker": "^16.1.4",
+    "expo-linear-gradient": "^14.1.5",
+    "expo-media-library": "^17.1.7",
     "expo-status-bar": "~2.2.3",
     "react": "19.0.0",
-    "react-native": "0.79.5"
+    "react-native": "0.79.5",
+    "react-native-chart-kit": "^6.12.0",
+    "react-native-gesture-handler": "^2.27.1",
+    "react-native-reanimated": "^3.18.0",
+    "react-native-safe-area-context": "^5.5.2",
+    "react-native-screens": "^4.13.1",
+    "react-native-svg": "^15.12.0"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
