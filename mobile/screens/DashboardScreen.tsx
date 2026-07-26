@@ -24,6 +24,7 @@ import LoadingSpinner from '../components/LoadingSpinner';
 import ErrorMessage from '../components/ErrorMessage';
 import { networkUtils } from '../utils/networkUtils';
 import { useToast } from '../utils/useToast';
+import { getFarmStats, getLatestTelemetry } from '../utils/iotApi';
 
 const { width: screenWidth } = Dimensions.get('window');
 const isSmallScreen = screenWidth < 375;
@@ -44,6 +45,12 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
   const [isAdminUser, setIsAdminUser] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [iotLive, setIotLive] = useState<{
+    points1h: number;
+    sensors: number;
+    doValue: string;
+    tempValue: string;
+  } | null>(null);
   
   useEffect(() => {
     // Check if currentUser exists and has admin role
@@ -62,6 +69,48 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
     waterQuality: { value: '0', unit: '/10', change: '0', type: 'neutral' },
     revenue: { value: '$0', unit: 'this month', change: '0%', type: 'neutral' },
   });
+
+  // Live IoT pipeline metrics (FastAPI + Timescale) — best-effort overlay
+  useEffect(() => {
+    let cancelled = false;
+    const pull = async () => {
+      try {
+        const [stats, latest] = await Promise.all([
+          getFarmStats('farm-alpha'),
+          getLatestTelemetry('farm-alpha', 40),
+        ]);
+        if (cancelled) return;
+        const doReading = latest.find((p) => p.metric === 'dissolved_oxygen');
+        const tempReading = latest.find((p) => p.metric === 'temperature');
+        setIotLive({
+          points1h: stats.total_points_1h,
+          sensors: stats.active_sensors_1h,
+          doValue: doReading ? `${doReading.value}${doReading.unit}` : '—',
+          tempValue: tempReading ? `${tempReading.value}${tempReading.unit}` : '—',
+        });
+        if (doReading) {
+          const score = Math.max(0, Math.min(10, doReading.value)).toFixed(1);
+          setMetricsData((prev) => ({
+            ...prev,
+            waterQuality: {
+              ...prev.waterQuality,
+              value: score,
+              change: 'live',
+              type: doReading.value < 5 ? 'negative' : 'positive',
+            },
+          }));
+        }
+      } catch {
+        // Backend optional when developing mobile offline
+      }
+    };
+    void pull();
+    const id = setInterval(pull, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   // Load saved metrics data
   useEffect(() => {
@@ -235,6 +284,15 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
             onRetry={loadMetricsData}
             type="error"
           />
+        )}
+
+        {iotLive && (
+          <View style={styles.iotStrip}>
+            <Text style={styles.iotTitle}>Live IoT pipeline</Text>
+            <Text style={styles.iotMeta}>
+              {iotLive.sensors} sensors · {iotLive.points1h.toLocaleString()} pts/hr · DO {iotLive.doValue} · Temp {iotLive.tempValue}
+            </Text>
+          </View>
         )}
 
         {/* Admin Controls */}
@@ -412,6 +470,23 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     padding: Spacing.lg,
+  },
+  iotStrip: {
+    marginBottom: Spacing.lg,
+    padding: Spacing.md,
+    borderRadius: BorderRadius.md,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  iotTitle: {
+    ...Typography.h3,
+    color: Colors.text,
+    marginBottom: Spacing.xs,
+  },
+  iotMeta: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
   },
   adminControls: {
     marginBottom: Spacing.lg,

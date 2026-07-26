@@ -1,0 +1,75 @@
+name: aquafarm-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend-smoke:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+      timescaledb:
+        image: timescale/timescaledb:latest-pg16
+        env:
+          POSTGRES_USER: aquafarm
+          POSTGRES_PASSWORD: aquafarm
+          POSTGRES_DB: aquafarm
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aquafarm -d aquafarm"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql+asyncpg://aquafarm:aquafarm@localhost:5432/aquafarm
+      REDIS_URL: redis://localhost:6379/0
+      DEVICE_TOKEN: dev-sensor-token
+      CORS_ORIGIN: http://localhost:3001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: pip install -r requirements.txt
+      - name: Init schema
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=aquafarm psql -h localhost -U aquafarm -d aquafarm -f sql/init.sql
+          PGPASSWORD=aquafarm psql -h localhost -U aquafarm -d aquafarm -f sql/migrate.sql || true
+      - name: Start API
+        run: |
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
+          sleep 5
+          curl -sf http://127.0.0.1:8000/health
+      - name: Start worker
+        run: |
+          python -m app.worker &
+          sleep 2
+      - name: Smoke ingest
+        working-directory: .
+        run: |
+          python scripts/smoke_test.py
+        env:
+          API_URL: http://127.0.0.1:8000
+          DEVICE_TOKEN: dev-sensor-token
+
+  web-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install
+      - run: npx tsc -p tsconfig.json --noEmit
