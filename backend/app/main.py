@@ -78,8 +78,8 @@ app.include_router(telemetry_router)
 app.include_router(fleet_router)
 
 
-@app.get("/health")
-async def health() -> dict | JSONResponse:
+@app.get("/health", response_model=None)
+async def health():
     redis_ok = False
     db_ok = False
     stream_length = 0
