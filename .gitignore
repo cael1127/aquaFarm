@@ -12,3 +12,4 @@ venv/
 mobile/node_modules/
 web/node_modules/
 web/.next/
+*.tsbuildinfo

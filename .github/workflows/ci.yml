@@ -12,6 +12,11 @@ jobs:
       redis:
         image: redis:7-alpine
         ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
       timescaledb:
         image: timescale/timescaledb:latest-pg16
         env:
@@ -43,23 +48,33 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y postgresql-client
           PGPASSWORD=aquafarm psql -h localhost -U aquafarm -d aquafarm -f sql/init.sql
-          PGPASSWORD=aquafarm psql -h localhost -U aquafarm -d aquafarm -f sql/migrate.sql || true
+          PGPASSWORD=aquafarm psql -h localhost -U aquafarm -d aquafarm -f sql/migrate.sql
       - name: Start API
         run: |
-          uvicorn app.main:app --host 127.0.0.1 --port 8000 &
-          sleep 5
-          curl -sf http://127.0.0.1:8000/health
+          set -e
+          uvicorn app.main:app --host 127.0.0.1 --port 8000 > /tmp/aquafarm-api.log 2>&1 &
+          echo $! > /tmp/aquafarm-api.pid
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8000/health; then
+              echo "api healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "=== api log ==="
+          cat /tmp/aquafarm-api.log || true
+          exit 1
       - name: Start worker
         run: |
-          python -m app.worker &
+          python -m app.worker > /tmp/aquafarm-worker.log 2>&1 &
           sleep 2
       - name: Smoke ingest
         working-directory: .
-        run: |
-          python scripts/smoke_test.py
+        run: python scripts/smoke_test.py
         env:
           API_URL: http://127.0.0.1:8000
           DEVICE_TOKEN: dev-sensor-token
+          LATENCY_BUDGET_S: "8"
 
   web-typecheck:
     runs-on: ubuntu-latest
@@ -72,4 +87,4 @@ jobs:
         with:
           node-version: "22"
       - run: npm install
-      - run: npx tsc -p tsconfig.json --noEmit
+      - run: npm run typecheck

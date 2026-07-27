@@ -18,6 +18,7 @@ type TelemetryPoint = {
   metric: string;
   value: number;
   unit: string;
+  lag_ms?: number;
 };
 
 type AlertEvent = {
@@ -51,8 +52,18 @@ export default function DashboardPage() {
   const [stats, setStats] = useState({ total: 0, sensors: 0, lastSeen: "—" });
   const [metricFocus, setMetricFocus] = useState("dissolved_oxygen");
   const [throughput, setThroughput] = useState(0);
+  const [lagMs, setLagMs] = useState<number | null>(null);
+  const [avgLagMs, setAvgLagMs] = useState<number | null>(null);
+  const [pipeline, setPipeline] = useState<{
+    pending: number;
+    streamLength: number;
+    consumers: number;
+    lagAvg: number | null;
+    lagP95: number | null;
+  }>({ pending: 0, streamLength: 0, consumers: 0, lagAvg: null, lagP95: null });
   const seen = useRef(0);
   const windowRef = useRef<number[]>([]);
+  const lagWindow = useRef<number[]>([]);
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -79,6 +90,15 @@ export default function DashboardPage() {
             windowRef.current.push(now);
             windowRef.current = windowRef.current.filter((t) => now - t < 5000);
             setThroughput(Math.round(windowRef.current.length / 5));
+            if (typeof p.lag_ms === "number") {
+              setLagMs(p.lag_ms);
+              lagWindow.current.push(p.lag_ms);
+              lagWindow.current = lagWindow.current.slice(-40);
+              const avg = Math.round(
+                lagWindow.current.reduce((a, b) => a + b, 0) / lagWindow.current.length
+              );
+              setAvgLagMs(avg);
+            }
             setPoints((prev) => {
               const next = [...prev, p];
               return next.length > 240 ? next.slice(-240) : next;
@@ -138,6 +158,18 @@ export default function DashboardPage() {
             );
           }
         })
+        .catch(() => undefined);
+      void fetch(`${API}/health`)
+        .then((r) => r.json())
+        .then((d) =>
+          setPipeline({
+            pending: Number(d.pending ?? 0),
+            streamLength: Number(d.stream_length ?? 0),
+            consumers: Number(d.consumers ?? 0),
+            lagAvg: d.lag_avg_ms == null ? null : Number(d.lag_avg_ms),
+            lagP95: d.lag_p95_ms == null ? null : Number(d.lag_p95_ms),
+          })
+        )
         .catch(() => undefined);
     };
 
@@ -205,6 +237,21 @@ export default function DashboardPage() {
         <div className="stat">
           <span>Ingest throughput</span>
           <strong>{throughput}/s</strong>
+        </div>
+        <div className="stat">
+          <span>Pipeline lag</span>
+          <strong>
+            {lagMs == null ? "—" : `${lagMs}ms`}
+            {avgLagMs != null ? <em className="stat-sub"> avg {avgLagMs}ms</em> : null}
+            {pipeline.lagP95 != null ? <em className="stat-sub"> p95 {pipeline.lagP95}ms</em> : null}
+          </strong>
+        </div>
+        <div className="stat">
+          <span>Stream backlog</span>
+          <strong>
+            {pipeline.pending}
+            <em className="stat-sub"> / {pipeline.streamLength} · {pipeline.consumers}c</em>
+          </strong>
         </div>
         <div className="stat">
           <span>Points / hour</span>

@@ -6,8 +6,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.config import settings
+from app.db import SessionLocal
 from app.migrate import run_migrations
 from app.redis_client import close_redis, ensure_consumer_group, get_redis
 from app.routes.fleet import router as fleet_router
@@ -76,15 +79,64 @@ app.include_router(fleet_router)
 
 
 @app.get("/health")
-async def health() -> dict:
-    r = await get_redis()
-    pong = await r.ping()
-    return {
-        "ok": True,
-        "redis": bool(pong),
+async def health() -> dict | JSONResponse:
+    redis_ok = False
+    db_ok = False
+    stream_length = 0
+    pending = 0
+    consumers = 0
+    lag_samples: list[float] = []
+
+    try:
+        r = await get_redis()
+        redis_ok = bool(await r.ping())
+        stream_length = int(await r.xlen(settings.ingest_stream))
+        try:
+            raw_lags = await r.lrange("telemetry:lag_ms", 0, 99)
+            lag_samples = [float(x) for x in raw_lags]
+        except Exception:
+            lag_samples = []
+        try:
+            groups = await r.xinfo_groups(settings.ingest_stream)
+            for group in groups:
+                if group.get("name") == settings.consumer_group:
+                    pending = int(group.get("pending") or 0)
+                    consumers = int(group.get("consumers") or 0)
+                    break
+        except Exception:
+            pass
+    except Exception:
+        redis_ok = False
+
+    try:
+        async with SessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+            db_ok = True
+    except Exception:
+        db_ok = False
+
+    lag_avg_ms = round(sum(lag_samples) / len(lag_samples), 1) if lag_samples else None
+    lag_p95_ms = None
+    if lag_samples:
+        ordered = sorted(lag_samples)
+        lag_p95_ms = round(ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))], 1)
+
+    body = {
+        "ok": redis_ok and db_ok,
+        "redis": redis_ok,
+        "database": db_ok,
         "stream": settings.ingest_stream,
         "channel": settings.telemetry_channel,
+        "stream_length": stream_length,
+        "pending": pending,
+        "consumers": consumers,
+        "lag_avg_ms": lag_avg_ms,
+        "lag_p95_ms": lag_p95_ms,
+        "lag_samples": len(lag_samples),
     }
+    if not body["ok"]:
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.websocket("/ws/telemetry")

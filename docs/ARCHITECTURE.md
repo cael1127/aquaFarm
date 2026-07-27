@@ -34,8 +34,11 @@ Sensor Simulator / Devices
 
 ## Key endpoints
 
-- `POST /api/v1/ingest` — enqueue telemetry
+- `GET /health` — Redis + DB readiness, stream length, pending, consumers (503 when unhealthy)
+- `POST /api/v1/ingest` — enqueue telemetry (`enqueued_at` for pipeline lag)
 - `GET /api/v1/telemetry/latest|history|stats|aggregate`
 - `GET /api/v1/devices` — sensor registry
 - `GET /api/v1/alerts` — persisted threshold breaches
-- `WS /ws/telemetry` — live telemetry + alerts
+- `WS /ws/telemetry` — live telemetry + alerts (`lag_ms` on telemetry events)
+
+Worker reclaim: idle `XAUTOCLAIM` recovers pending messages after consumer crashes.

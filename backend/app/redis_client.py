@@ -54,6 +54,7 @@ async def enqueue_telemetry(items: list[TelemetryIn]) -> str:
             "value": str(item.value),
             "unit": item.unit,
             "timestamp": ts.isoformat(),
+            "enqueued_at": datetime.now(timezone.utc).isoformat(),
             "payload": json.dumps(item.payload),
         }
         pipe.xadd(settings.ingest_stream, fields, maxlen=100_000, approximate=True)

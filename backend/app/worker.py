@@ -44,18 +44,29 @@ async def wait_for_db(retries: int = 40, delay: float = 1.0) -> None:
 
 async def process_batch(entries: list[tuple[str, dict[str, str]]]) -> list[str]:
     events: list[dict] = []
+    now = datetime.now(timezone.utc)
 
     for msg_id, fields in entries:
         ts_raw = fields.get("timestamp")
         try:
-            ts = datetime.fromisoformat(ts_raw) if ts_raw else datetime.now(timezone.utc)
+            ts = datetime.fromisoformat(ts_raw) if ts_raw else now
         except ValueError:
-            ts = datetime.now(timezone.utc)
+            ts = now
+
+        enq_raw = fields.get("enqueued_at")
+        try:
+            enqueued_at = datetime.fromisoformat(enq_raw) if enq_raw else now
+        except ValueError:
+            enqueued_at = now
+        if enqueued_at.tzinfo is None:
+            enqueued_at = enqueued_at.replace(tzinfo=timezone.utc)
 
         try:
             payload = json.loads(fields.get("payload") or "{}")
         except json.JSONDecodeError:
             payload = {}
+
+        lag_ms = max(0, int((now - enqueued_at).total_seconds() * 1000))
 
         events.append(
             {
@@ -67,6 +78,7 @@ async def process_batch(entries: list[tuple[str, dict[str, str]]]) -> list[str]:
                 "value": float(fields["value"]),
                 "unit": fields.get("unit") or "",
                 "payload": payload,
+                "lag_ms": lag_ms,
             }
         )
 
@@ -129,6 +141,7 @@ async def process_batch(entries: list[tuple[str, dict[str, str]]]) -> list[str]:
         await session.commit()
 
     acked: list[str] = []
+    r = await get_redis()
     for e in events:
         await publish_live(
             {
@@ -138,8 +151,14 @@ async def process_batch(entries: list[tuple[str, dict[str, str]]]) -> list[str]:
                 "metric": e["metric"],
                 "value": e["value"],
                 "unit": e["unit"],
+                "lag_ms": e["lag_ms"],
             }
         )
+        try:
+            await r.lpush("telemetry:lag_ms", str(e["lag_ms"]))
+            await r.ltrim("telemetry:lag_ms", 0, 99)
+        except Exception:
+            pass
 
         rule = ALERT_RULES.get(e["metric"])
         if rule:
@@ -187,6 +206,39 @@ async def process_batch(entries: list[tuple[str, dict[str, str]]]) -> list[str]:
     return acked
 
 
+async def reclaim_pending(r, min_idle_ms: int = 30_000, count: int = 50) -> int:
+    try:
+        _next_id, claimed, _deleted = await r.xautoclaim(
+            name=settings.ingest_stream,
+            groupname=settings.consumer_group,
+            consumername=CONSUMER_NAME,
+            min_idle_time=min_idle_ms,
+            start_id="0-0",
+            count=count,
+        )
+    except Exception:
+        log.exception("XAUTOCLAIM failed")
+        return 0
+
+    if not claimed:
+        return 0
+
+    log.info("Reclaimed %d pending message(s)", len(claimed))
+    try:
+        acked = await process_batch(claimed)
+        if acked:
+            await r.xack(settings.ingest_stream, settings.consumer_group, *acked)
+    except Exception:
+        log.exception("Reclaim batch failed (%d messages)", len(claimed))
+        for msg_id, fields in claimed:
+            try:
+                await process_batch([(msg_id, fields)])
+                await r.xack(settings.ingest_stream, settings.consumer_group, msg_id)
+            except Exception:
+                log.exception("Poison reclaimed message %s", msg_id)
+    return len(claimed)
+
+
 async def run_worker() -> None:
     await wait_for_db()
     await run_migrations()
@@ -199,6 +251,7 @@ async def run_worker() -> None:
         CONSUMER_NAME,
     )
 
+    idle_ticks = 0
     while True:
         messages = await r.xreadgroup(
             groupname=settings.consumer_group,
@@ -208,8 +261,12 @@ async def run_worker() -> None:
             block=2000,
         )
         if not messages:
+            idle_ticks += 1
+            if idle_ticks % 5 == 0:
+                await reclaim_pending(r)
             continue
 
+        idle_ticks = 0
         for _stream, entries in messages:
             try:
                 acked = await process_batch(entries)

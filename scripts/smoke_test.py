@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 API = os.getenv("API_URL", "http://localhost:8000")
 TOKEN = os.getenv("DEVICE_TOKEN", "dev-sensor-token")
+LATENCY_BUDGET_S = float(os.getenv("LATENCY_BUDGET_S", "5"))
 
 
 def req(method: str, path: str, body: dict | None = None, headers: dict | None = None):
@@ -28,9 +29,12 @@ def main() -> int:
     print("1) health")
     status, health = req("GET", "/health")
     assert status == 200 and health.get("ok"), health
+    assert health.get("redis") is True, health
+    assert health.get("database") is True, health
     print("   ok", health)
 
     print("2) authenticated ingest")
+    t0 = time.time()
     payload = {
         "sensor_id": "smoke-sensor",
         "farm_id": "farm-alpha",
@@ -57,9 +61,25 @@ def main() -> int:
             found = True
             break
     assert found, "smoke-sensor not found in latest telemetry"
-    print("   persisted")
+    latency = time.time() - t0
+    print(f"   persisted in {latency:.2f}s")
+    assert latency <= LATENCY_BUDGET_S, f"ingest→latest latency {latency:.2f}s > {LATENCY_BUDGET_S}s"
 
-    print("4) stats")
+    print("4) alerts")
+    alert_found = False
+    for _ in range(10):
+        _, alerts = req("GET", "/api/v1/alerts?farm_id=farm-alpha&limit=50")
+        if any(
+            a.get("sensor_id") == "smoke-sensor" and a.get("metric") == "dissolved_oxygen"
+            for a in alerts
+        ):
+            alert_found = True
+            break
+        time.sleep(0.4)
+    assert alert_found, "expected dissolved_oxygen alert for smoke-sensor"
+    print("   alert present")
+
+    print("5) stats")
     _, stats = req("GET", "/api/v1/telemetry/stats?farm_id=farm-alpha")
     assert stats.get("total_points_1h", 0) > 0, stats
     print("   ", stats)
