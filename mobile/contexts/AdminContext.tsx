@@ -44,7 +44,7 @@ const defaultUsers: User[] = [
   {
     id: 'farm-1',
     username: 'threesisters',
-    email: 'admin@threesistersfarm.com',
+    email: ''ttwewe@ttw.com,
     farmName: 'Three Sisters Oyster Farm',
     farmType: 'oyster',
     location: 'Chesapeake Bay, MD',
